@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>스톱워치</title>
+<meta name="description" content="간단하고 정확한 온라인 스톱워치 — 랩 기록, 키보드 단축키 지원" />
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --line: #262a33;
+    --text: #e8eaed;
+    --muted: #8a909c;
+    --accent: #3ddc97;
+    --stop: #ff6b6b;
+    --best: #3ddc97;
+    --worst: #ff8a65;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --line: #e3e6eb;
+      --text: #15181d;
+      --muted: #6b7280;
+      --accent: #0f9d63;
+      --stop: #d93b3b;
+      --best: #0f9d63;
+      --worst: #d4622f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 6vh 16px 32px;
+  }
+  main { width: 100%; max-width: 520px; }
+  h1 {
+    font-size: 14px; font-weight: 600; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--muted); text-align: center; margin: 0 0 28px;
+  }
+  .display {
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    font-size: clamp(52px, 15vw, 92px);
+    font-weight: 300;
+    text-align: center;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    margin-bottom: 8px;
+  }
+  .display .ms { color: var(--muted); }
+  .lap-now {
+    text-align: center; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 16px; height: 22px; margin-bottom: 32px;
+  }
+  .controls { display: flex; gap: 16px; justify-content: center; margin-bottom: 32px; }
+  button {
+    appearance: none; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    width: 96px; height: 96px; border-radius: 50%;
+    font-size: 17px; font-weight: 600; cursor: pointer;
+    transition: transform .08s ease, background .15s ease, opacity .15s;
+  }
+  button:active { transform: scale(.96); }
+  button:disabled { opacity: .35; cursor: default; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  #toggle.start { background: color-mix(in srgb, var(--accent) 18%, var(--panel)); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+  #toggle.stop  { background: color-mix(in srgb, var(--stop) 18%, var(--panel)); color: var(--stop); border-color: color-mix(in srgb, var(--stop) 45%, transparent); }
+  .laps { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+  .laps li {
+    display: flex; justify-content: space-between; padding: 13px 4px;
+    border-bottom: 1px solid var(--line);
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 16px;
+  }
+  .laps li .n { color: var(--muted); font-family: inherit; }
+  .laps li .t { display: flex; gap: 20px; }
+  .laps li .total { color: var(--muted); }
+  .laps li.best .split { color: var(--best); }
+  .laps li.worst .split { color: var(--worst); }
+  .hint { text-align: center; color: var(--muted); font-size: 13px; margin-top: 28px; line-height: 1.7; }
+  kbd {
+    font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+    border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px;
+    background: var(--panel);
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Stopwatch</h1>
+  <div class="display" id="display" aria-live="off">00:00<span class="ms">.00</span></div>
+  <div class="lap-now" id="lapNow"></div>
+
+  <div class="controls">
+    <button id="lapReset" type="button" disabled>랩</button>
+    <button id="toggle" type="button" class="start">시작</button>
+  </div>
+
+  <ol class="laps" id="laps"></ol>
+
+  <p class="hint">
+    <kbd>Space</kbd> 시작/정지 &nbsp;·&nbsp; <kbd>L</kbd> 랩 &nbsp;·&nbsp; <kbd>R</kbd> 초기화<br />
+    새로고침해도 기록이 유지됩니다.
+  </p>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const display = $("display"), lapNow = $("lapNow"), lapsEl = $("laps");
+  const toggleBtn = $("toggle"), lapResetBtn = $("lapReset");
+  const KEY = "stopwatch-state-v1";
+
+  // state: elapsed time accumulated before current run, start timestamp of current run, laps (cumulative totals in ms)
+  let state = { acc: 0, startedAt: null, laps: [] };
+  let raf = null;
+
+  function load() {
+    try {
+      const s = JSON.parse(localStorage.getItem(KEY));
+      if (s && typeof s.acc === "number" && Array.isArray(s.laps)) state = s;
+    } catch (_) {}
+  }
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (_) {}
+  }
+
+  const running = () => state.startedAt !== null;
+  const elapsed = () => state.acc + (running() ? Date.now() - state.startedAt : 0);
+
+  function fmt(ms, html = false) {
+    const cs = Math.floor(ms / 10) % 100;
+    const s = Math.floor(ms / 1000) % 60;
+    const m = Math.floor(ms / 60000) % 60;
+    const h = Math.floor(ms / 3600000);
+    const p = (n) => String(n).padStart(2, "0");
+    const main = (h ? h + ":" + p(m) : p(m)) + ":" + p(s);
+    return html ? `${main}<span class="ms">.${p(cs)}</span>` : `${main}.${p(cs)}`;
+  }
+
+  function tick() {
+    const t = elapsed();
+    display.innerHTML = fmt(t, true);
+    const last = state.laps.length ? state.laps[state.laps.length - 1] : 0;
+    lapNow.textContent = state.laps.length ? `랩 ${state.laps.length + 1}  ${fmt(t - last)}` : "";
+    document.title = running() ? `${fmt(t)} · 스톱워치` : "스톱워치";
+    if (running()) raf = requestAnimationFrame(tick);
+  }
+
+  function renderLaps() {
+    const splits = state.laps.map((t, i) => t - (i ? state.laps[i - 1] : 0));
+    let best = -1, worst = -1;
+    if (splits.length >= 2) {
+      best = splits.indexOf(Math.min(...splits));
+      worst = splits.indexOf(Math.max(...splits));
+    }
+    lapsEl.innerHTML = "";
+    for (let i = splits.length - 1; i >= 0; i--) {
+      const li = document.createElement("li");
+      if (i === best) li.className = "best";
+      else if (i === worst) li.className = "worst";
+      li.innerHTML = `<span class="n">랩 ${i + 1}</span><span class="t"><span class="split">${fmt(splits[i])}</span><span class="total">${fmt(state.laps[i])}</span></span>`;
+      lapsEl.appendChild(li);
+    }
+  }
+
+  function renderButtons() {
+    toggleBtn.textContent = running() ? "정지" : (elapsed() > 0 ? "계속" : "시작");
+    toggleBtn.className = running() ? "stop" : "start";
+    lapResetBtn.textContent = running() || elapsed() === 0 ? "랩" : "초기화";
+    lapResetBtn.disabled = !running() && elapsed() === 0;
+  }
+
+  function render() { renderButtons(); renderLaps(); cancelAnimationFrame(raf); tick(); }
+
+  function toggle() {
+    if (running()) { state.acc = elapsed(); state.startedAt = null; }
+    else { state.startedAt = Date.now(); }
+    save(); render();
+  }
+  function lap() {
+    if (!running()) return;
+    state.laps.push(elapsed());
+    save(); renderLaps(); tick();
+  }
+  function reset() {
+    if (running()) return;
+    state = { acc: 0, startedAt: null, laps: [] };
+    save(); render();
+  }
+
+  toggleBtn.addEventListener("click", toggle);
+  lapResetBtn.addEventListener("click", () => (running() ? lap() : reset()));
+  document.addEventListener("keydown", (e) => {
+    if (e.target.closest && e.target.closest("input, textarea")) return;
+    if (e.code === "Space") { e.preventDefault(); toggle(); }
+    else if (e.key === "l" || e.key === "L") lap();
+    else if (e.key === "r" || e.key === "R") reset();
+  });
+  // keep Space from also "clicking" a focused button
+  document.querySelectorAll("button").forEach((b) => b.addEventListener("keyup", (e) => e.code === "Space" && e.preventDefault()));
+
+  load(); render();
+})();
+</script>
+</body>
+</html>
